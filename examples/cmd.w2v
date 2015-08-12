@@ -1,0 +1,73 @@
+$PREAMBLE
+  `timescale 1ps/1ps
+  `include "my_defines.vh"
+  module tb();
+$END_PREAMBLE
+
+$PARAMS
+  unittime    1000
+  N           4
+  DATAW       128
+$END_PARAMS
+
+$INPUTS
+  clk
+  rst_n
+  mysig
+  mybus1 [DATAW-1:0]
+  mybus2 [3:0]
+$END_INPUTS
+
+$MIDAMBLE
+
+  wire myout [DATAW-1:0];
+
+   my_dut my_dut_inst #(.DATAW(DATAW), .N(N))
+         (.clk, .rst_n, .sig (mysig),
+	  .bus1(mybus1), .bus2 (mybus2),
+	  .out(myout[DATAW-1:0]));
+
+  initial begin
+    $timeformat(-9, 0, "", 10);
+    $vcdplusfile("verilog.vpd");
+    $vcdpluson;
+    $vcdplusmemon();
+  end
+  // Can contain any arbitrary verilog code
+
+$END_MIDAMBLE
+
+$POSTAMBLE
+  endmodule
+$END_POSTAMBLE
+```
+
+$WAVES(rst)
+  clk           _/-\_/-\_/-\_/-\_/-\
+  rst_n         ___________/-
+$END_WAVES
+
+$WAVES(clk)
+  $REPEAT(10)
+  clk           _/-\_/-\
+$END_WAVES
+
+
+$WAVES(stim1)
+  clk           _/-\_/-\_/-\_/-\_/-\
+  mysig         _______/---\_  
+  mybus2        [0....]x[3]x[f]
+$END_WAVES
+
+$WAVES(req)
+  $ALIAS(p=1934_3ddf_8dfe_ffab_0000_0000_aa55_ffaa)
+  $ALIAS(q=random)
+  clk           _/-\_/-\_/-\_/-\_/-\
+  mybus1        [0....]x[p]x[q]x[0]
+$END_WAVES
+
+$STIMULUS
+  #$INIT(rst,req,clk)
+  $INIT(rst,req|stim1,clk)
+$END_STIMULUS
+
