@@ -1,10 +1,10 @@
 # wave2v - An ascii waveform to verilog stimuli converter
 
 `wave2v` is a perl script enables quick creation of
-testbenches for simple to complex verilog modules. Stimuli
-can be provided via `$WAVES` blocks, which contain _ascii
-wave_ definitions. An example of a $WAVES block defining a
-waveform called `wave1` is:
+testbenches for verilog modules. Stimuli can be provided via
+`$WAVES` blocks, which contain _ascii wave_ definitions. An
+example of a $WAVES block defining a waveform called `wave1`
+is:
 
 ```
 $WAVES(wave1)
@@ -37,8 +37,6 @@ pre-defined order by `wave2v`.
 
 ### Preamble
 
-The first part is a preamble.
-
 ```
 $PREAMBLE
   `timescale 1ps/1ps
@@ -48,7 +46,7 @@ $END_PREAMBLE
 
 ```
 
-Code in the preamble is output first.
+Code in the preamble is output before anything else.
 
 ### Params
 
@@ -161,14 +159,14 @@ inputs. Inputs not specified are implicitly driven to 0.
 
 ```
 $WAVES(clk)
-  $REPEAT(1000)
+  $REPEAT(100)
   clk           _/-\_/-\
 $END_WAVES
 ```
 
 The `$REPEAT` modifier provides a convenient way of
 repeating the waveform. In the above example, the wave is
-repeated 1000 times, resulting in 2000 positive clock edges.
+repeated 100 times, resulting in 200 positive clock edges.
 
 
 ```
@@ -234,14 +232,21 @@ simultaneously) followed by `clk`.
 
 The `|` character effectively 'or's two or more wave
 blocks. This means that each signal in a wave block is
-bitwise or-ed with its counterpart in other blocks. Inputs
+bitwise or-ed with its counterpart in other blocks. This
+effectively enables overlapping of two or more waves. Inputs
 that are unspecified in a wave block are driven to 0 so this
 usually does what the user intends.
 
 Similar to `|`, the `&` character effectively 'and's
 corresponds signals in two or more wave blocks.
 
-Thats all folks!
+## End of simulation
+After all $STIMULUS blocks are processed, `wave2v` puts out
+a `$finish;` statement to end the simulation.
+
+## Example
+
+Checkout the [examples](https://github.com/lchhabra/wave2v/tree/master/examples) for a working example.
 
 ## TODO
 * Syntax checking and more meaningful error messages.
