@@ -31,7 +31,7 @@ As in perl, all characters after a `#` are considered comments.
 ## The command file
 
 The command file is made up of _blocks_ that start with
-`$_BLOCK_NAME` and end with `$END_*BLOCK_NAME*`. Blocks can
+`$BLOCK_NAME` and end with `$END_BLOCKNAME`. Blocks can
 be specified in any order; they are executed in a
 pre-defined order by `wave2v`.
 
