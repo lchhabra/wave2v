@@ -1,0 +1,545 @@
+#!/usr/bin/env perl
+## Convert ascii waves to verilog code.
+## Derived from wave2hsp.pl, that I wrote to convert
+## ascii waves to spice stimuli
+
+## Usage: wave2v <cmd file>
+## ------------------------------------------------------------------
+my($verilog) = 1;
+
+@commLine=split(/\//, $0);
+$commFile=$commLine[$#commLine];
+die "Usage: $commFile <cmd file>\n".
+    "Type perldoc $commFile for documentation.\n"
+        if ($#ARGV < 0);
+
+## Modules
+#use Convert::SciEng;
+use Getopt::Long;
+
+## Hash to store parameters
+my(%params);
+
+## Global variables
+## Note that the processing subroutines are called in this order, so make
+## sure PREAMBLE is the first one, and POSTAMBLE after INPUTS. Also,
+## since other blocks can use parameters, make sure PARAMS is before
+## most of them.
+my(@keyWords) = qw(PREAMBLE PARAMS INPUTS MIDAMBLE WAVES STIMULUS POSTAMBLE);
+my(%file, $unitTime);
+my(@waves);  ## An array of wave stimuli
+my(%waveStim); ## Stimulus for each block in @waves
+my(@blocks); ## An array of block hashes
+my($subStart, $subEnd) = ("[", "]");
+###################### BEGIN PROGRAM #######################
+&parseFile($ARGV[0]);
+
+for(@{$file{"HEADERS"}}) {print;}
+
+for my $kw (@keyWords) {
+  for my $block (@blocks) {
+    next if($$block{name} !~ $kw);
+    #if($verilog) { $kw =~ s/STIMULUS/VSTIM/; }
+    my($sub) = "process$kw";
+    &{$sub}($block);
+    die $@ if $@;
+  }
+}
+for(@{$file{"FOOTERS"}}) {print;}
+
+#if(!$verilog) { print ".end\n";      }
+#else          { print "endmodule\n"; }
+###################### END   PROGRAM #######################
+###################### READ INPUT FILE ###########################
+sub parseFile {
+  my($cmdFile) = @_;
+  my($filePtr);
+  open($filePtr, $cmdFile) || die "Cant open file $cmdFile: $!\n";
+  my($line);
+  while($line = <$filePtr>) {
+    if($line =~ /^\s*#/) {next};
+    if($line =~ /^\s*$/) {next};
+    $line =~ s/#.*$//g;
+    for(@keyWords) {
+      if($line =~ /^\s*\$$_(\s*\(.*\))?/) {
+        my($blockArg) = $1;
+        ## Preamble and postamble are verbatim. No modifications to the lines
+        my($verbatim) = ($_ eq "PREAMBLE") || ($_ eq "POSTAMBLE") || ($_ eq "MIDAMBLE");
+        my($blockHash) = parseBlock($_, $blockArg, $filePtr, $verbatim);
+        #my($blockHash) = parseBlock($_, $blockArg, \*CMDFILE, $verbatim);
+        push(@blocks, $blockHash);
+      }
+    }
+    if($line =~ /^\s*\$INCLUDE\s*\((\S+)\)/) {
+      ## Maybe I should look for loops in includes...
+      parseFile($1);
+    }
+    elsif($line =~ /^\s*\$HEADERS\s+(\S+)/) {
+      open(HEADERFILE, $1) || die "Cant open header file $1: $!\n";
+      push(@{$file{"HEADERS"}}, <HEADERFILE>);
+      close(HEADERFILE);
+    }
+    elsif($line =~ /^\s*\$FOOTERS\s+(\S+)/) {
+      open(FOOTERFILE, $1) || die "Cant open footer file $1: $!\n";
+      push(@{$file{"FOOTERS"}},  <FOOTERFILE>);
+      close(FOOTERFILE);
+    }
+    elsif($line =~ /^\s*\$CELL\s+(\S+)/) {
+      my($netlist) = "$1.hsp";
+      push(@{$file{"HEADERS"}}, "** Include the netlist\n");
+      push(@{$file{"HEADERS"}}, ".include \"$netlist\"\n");
+      push(@{$file{"HEADERS"}}, makeInstance($1, $netlist));
+    }
+  }
+  close(CMDFILE);
+}
+
+## ------------------------------------------------------------------------
+## Parse the blocks and create an array with the block data.
+## @blocks is an array of hashes. Each hash has members:
+##    name -- string
+##    args -- string
+##    data -- array of lines
+## ------------------------------------------------------------------------
+sub parseBlock {
+  my($block, $blockArg, $filePtr, $verbatim) = @_;
+  my(%blockHash);
+  my($myArray) = [];
+  $blockHash{"name"} = $block;
+  $blockHash{"args"} = $blockArg;
+  my($aa);
+  while($aa = <$filePtr>) {
+    if(!$verbatim) {
+      if($aa =~ /^\s*#/) {next};             ## Ignore comment lines
+      if($aa =~ /^\s*$/) {next};             ## Ignore blank lines
+      $aa =~ s/#.*$//g;                      ## Remove inline comments
+      $aa =~ s/^\s*//g;                      ## Remove leading blanks
+    }
+    if($aa !~ m/^\s*\$END_$block/i) {push(@$myArray, $aa)}
+    else {$blockHash{data} = $myArray; return(\%blockHash);}
+  }
+}
+
+####################### Some utilities #####################
+sub convertToNS {
+  my($value) = @_;
+  # Remove trailing 's' from $value
+  $value =~ s/^(.*)[sS]\s*$/$1/;
+  if(!$verilog) {
+    my $c = Convert::SciEng->new('spice');
+    ## Convert into nano secs
+    return($c->unfix($value)*1.0e9);
+  } else {
+    ## verilog
+    $value =~ s/^(.*)[npNP]\s*$/$1/; ## Remove n/p (nano/pico) suffix
+    return($value);
+  }
+}
+
+## Make an instance of the cell name from $CELL by looking for it in
+## the netlist file.
+sub makeInstance {
+  my($cell, $netlist) = @_;
+  my($instString) = "X$cell ";          ### The return value.
+  open(NETLIST, "$netlist") || die "Cannot open netlist file $netlist: $!\n";
+
+  my($inSubCkt) = 0;
+  while(<NETLIST>) {
+    if(/^\s*.subckt\s+$cell\s+(.*)/i) {
+      $instString .= $1."\n";
+      $inSubCkt = 1;
+    } elsif ($inSubCkt && /^\s*\+/) {
+      $instString .=$_;
+    } elsif ($inSubCkt && /^\s*[^+]/) {
+      $instString .= "+ $cell\n\n\n";
+      return($instString);
+    }
+  }
+  close(NETLIST);
+}
+
+
+####################### End of  utilities ##################
+
+###################### PROCESS VARIOUS BLOCKS ##############
+sub processINPUTS {
+  my($block) = @_;
+  my($arg) = $$block{args};
+  $arg =~ s/[()\s]//g;           ## Remove any spaces and parens
+  if($verilog) {
+    my(@arrayRef) = @{$$block{data}};   ## Make a copy of the data array.
+    #my(@arrayRef) = @{$file{$blockName}};
+    for(@arrayRef) {
+      chomp; s/\[.*//g;
+      my($start, $end) = isBus($_);
+      if((($start, $end) = isBus($_))) {
+        print "  reg [$start:$end] $_;\n";
+      } else {
+        print "  reg $_;\n";
+      }
+    }
+    print "\n\n";
+  }
+}
+
+sub processPREAMBLE {
+  my($block) = @_;
+  my(@arrayRef) = @{$$block{data}};
+  for(@arrayRef) { print; }
+}
+
+sub processPOSTAMBLE {
+  my($block) = @_;
+  my(@arrayRef) = @{$$block{data}};
+  for(@arrayRef) { print; }
+}
+
+sub processMIDAMBLE {
+  my($block) = @_;
+  my(@arrayRef) = @{$$block{data}};
+  for(@arrayRef) { print; }
+}
+
+sub processCAPS {
+  my($block) = @_;
+  my(@arrayRef) = @{$$block{data}};
+  my($capFunction) = "integ";
+  my($calcMeasure);
+  for(@arrayRef) {
+    if(/function/i) {
+      (undef, $capFunction) = split;
+      next;
+    }
+    my($signal, $timePoints) = split;
+    $signal =~ s/\s//g;
+    $signal =~ s/\[.*//g;
+    # Make uppercase so it becomes case insensitive.
+    $timePoints = uc($timePoints);
+    my($startIndex) = index($timePoints, "F");
+    my($endIndex)   = index($timePoints, "T");
+    my($from) = ($startIndex == -1)? "" : "from='$startIndex*unittime'";
+    my($to) = ($endIndex == -1)? "" : "to='$endIndex*unittime'";
+    my($busStart, $busEnd) = isBus($signal);
+    my($busStart, $busEnd) = sort {$a <=> $b} ($busStart, $busEnd);
+    my($subs); ### The bus subscript
+    if(!($busStart, $busEnd)) { # Its not a bus
+      $busStart = $busEnd = 0;
+    }
+    foreach $i ($busStart..$busEnd) {
+      if($busStart == 0 && $busEnd == 0) {$subs = "";}
+      else {$subs = $i}
+      my($measure) = ".measure tran val_${signal}${subs} $capFunction".
+	" i(V${signal}${subs}) $from $to\n".
+	  ".measure cap_${signal}${subs} param=";
+      if($capFunction eq "avg") {
+	if($startIndex == -1 || $endIndex == -1) {
+	  die "Need to give start and end points for averaging".
+	    " in cap measurements\n";
+	}
+	else {  ### We have good start and end indices
+	  my($avgTime) = $endIndex - $startIndex;
+	  $calcMeasure = "'val_${signal}${subs}/high*$avgTime*unittime'\n";
+	}
+      } elsif($capFunction eq "integ") { ### capFunction is integ
+        $calcMeasure = "'val_${signal}${subs}/high'\n";
+      } else { ## Signal an error.
+        die "ERROR: Cap function $capFunction not supported.\n";
+      }
+      print $measure.$calcMeasure."\n" if (!$verilog);
+    }
+  }
+}
+
+## ------------------------------------------------------------------------
+## Create an array @waves. Each element is a structure of the form:
+## $waves{name}      => "Name of the wave"
+## $waves{UNIT_TIME} => "Time associated with a character in the stimuli"
+## $waves{alias}     => Aliases for possibly long values.
+## $waves{wave}{$pinName} => "_/-\_.... waveform".
+## This data structure is used for creating the STIMULUS block stimuli
+## ------------------------------------------------------------------------
+sub processWAVES {
+  my($block) = @_;
+  my(%waves);                    ## Local vars
+  my($arg) = $$block{args};
+  $arg =~ s/[()\s]//g;           ## Remove any spaces and parens
+  $waves{name} = $arg;
+  my(@arr) = @{$$block{data}};   ## Make a copy of the data array.
+  for(@arr) {
+    s/^\s*//g;    s/\s*$//g;     ## Removing leading and trailing blanks
+    if(/^\$(UNIT_TIME|REPEAT)\s*\((.*)\)/i) {
+      my($kw, $val) = ($1, $2);
+      $val =~ s/\s//g;           ## Remove all spaces
+      if($waves{$kw}) {
+        die "Found duplicate specification of \$${kw} in $blockName $arg\n";
+      } else {
+        $waves{$kw} = $val;
+      }
+    } elsif(/^\$ALIAS\s*\(\s*(.*)\s*\)/i) {
+      ## Process the ALIAS keyword
+      my($aliasStr) = $1; $aliasStr =~ s/[\s\[\]]//g;
+      my($alias, $val) = split(/=+/, $aliasStr);
+      $val =~ s/_//g; ## Remove _ from alias values. Useful for
+                      ## dividing up long values
+      $waves{alias}{$alias} = $val;
+    } elsif(m@^(\S+)\s+([_/\-\\\[\]\da-z.x]+)$@i) {
+      ## This should be the last condition in this if..else.. block.
+      my($signal, $waveform) = ($1, $2);
+      $waves{wave}{$signal} = $waveform;
+    } else {die "Unrecognized line in $blockName($arg): $_\n";}
+  }
+  ## Note: This overwrites any previous wave with name $arg.
+  $waveStim{$arg} = wavesStim(\%waves);
+}
+
+## ------------------------------------------------------------------------
+## Make a stim element for the waves block given in the argument. For a
+## description of a stim element see the top of this file.
+## ------------------------------------------------------------------------
+sub wavesStim {
+  my($wavesBlock) = @_;
+  my(%wavesBlock) = %$wavesBlock;
+  my($repeat) = $wavesBlock{REPEAT} || 1;
+  #my($unitTime) = $wavesBlock{UNIT_TIME} || $unitTime; TODO
+  #$unitTime     =~ s/s\s*$//i;  ## Remove the trailing 's' TODO
+  die "ERROR: unittime not defined\n" if ! $unitTime;
+  #my($unitTimeNS) = $convert->unfix($unitTime)*1.0e9;
+  my(%stimuli);
+  ## The default rftime
+  my($globalRFTime) =  0; #$self->{vars}{RFTIME}; NOT NEEDED FOR VERILOG
+  #my($rfTime)       = $globalRFTime; $rfTime =~ s/s\s*$//i; ## Remove trailing s.
+  #my($rfTimeNS)     = $convert->unfix($rfTime)*1.0e9;
+  ### I need the 0.0001 because perl might have a round off difference
+  ### when doing an equal-to comparision (if I use >=).
+  #die "ERROR: RFTIME ($globalRFTime) should be less than ".
+  #   "UNIT_TIME($unitTime)\nTry using\$ALIAS to keep the waves smaller\n"
+  #     if (($rfTimeNS+0.000001) > $unitTimeNS);
+  my($duration) = 0;
+  my($signal);
+  for my $i (1..$repeat) {
+    my($maxSigTime) = 0; ## Time of the longest signal in the wave
+    foreach $signal (keys %{$wavesBlock{wave}}) {
+      my($time)=0;
+      my($waves) = $wavesBlock{wave}{$signal};
+      if($waves =~ m#^[_/\-\\]+$#) {
+        ## Non bus
+        my(@waves) = split("", $waves);
+        for(@waves) {
+          my($val);
+        SWITCH: {
+            $val = 0, last SWITCH if(m#^[_\\]$#);
+            $val = 1, last SWITCH if(m#^[\-/]$#);
+            die "Unrecognized char $_ in $waves\n";
+          }
+          $stimuli{$signal}{$time+$duration} = [$val, $globalRFTime];
+          $time += $convert->unfix($unitTime)*1.0e9 if(!$verilog);
+          $time += $unitTime                        if($verilog);
+        }
+      } elsif($waves =~ m#^[\[\].a-f\dx]#i) { ## . is used as a filler
+        ## Bus
+        my(@waves) = split(/x/i, $waves);
+        for(0..$#waves) {
+          my($val)=$waves[$_];
+          $val =~ s/[\[\].]//g; ## . is used as a filler
+          # Do alias substitution. The alias could be a function
+          $val = exists($wavesBlock{alias}{$val})
+                        ? wavesAlias($signal, $wavesBlock{alias}{$val})
+                        : $val;
+          my($splitter) = $_? 1 : 0; ## Ignore the 'x' for the first seq.
+          my($seqLen) = length($waves[$_])+$splitter;
+          for(1..$seqLen) {
+            ## Set value for every timestep, to allow us to apply
+            ## functions while merging waves
+            $stimuli{$signal}{$time+$duration} = [$val, $globalRFTime];
+            $time += $convert->unfix($unitTime)*1.0e9 if(!$verilog);
+            $time += $unitTime                        if($verilog);
+          }
+        }
+      }
+      else {die "ERROR: Unrecognized WAVES line $waves\n";}
+      $maxSigTime = ($time > $maxSigTime)? $time: $maxSigTime;
+    }
+    $duration += $maxSigTime;
+  }
+  my($wavesRef) = ["", $duration, \%stimuli];
+  return($wavesRef);
+}
+
+## ------------------------------------------------------------------------
+## Process all waves in $init, and append to $stim. Return the resulting
+## $stim. Waves can be separated by '|', '&' or ','.
+##   | and & cause waves to overlap in time.
+##   , causes waves to be separate in time
+##  waveA|waveB causes the signals of A and B to be 'or'-ed
+##  waveA&waveB causes the signals of A and B to be 'and'-ed
+##
+## Set the stimuli for a particular init stim. If $init is empty, the
+## structure is returned unmodified. Returns the resulting $stimRef
+## and the resulting time $time.
+## ------------------------------------------------------------------------
+sub setWavesStim {
+  my($stim, $init, $time) = @_;
+  ## Whitespaces have already been stripped. Also note that $init can
+  ## be empty, in which case, this block does nothing.
+  while($init) {
+    ## Take out first wave in $init
+    $init =~ s/^([,|&])?([^,|&]+)([,|&])?(.*)/$4/;
+    my($function, $initName, $nxtFunction) = ($1, $2, $3);
+    my($wavesRef) = $waveStim{$initName};
+    die "ERROR: No waves found for '$initName'.\n" if !(defined $wavesRef);
+    my($meas, $duration, $wavesStim) = @$wavesRef;
+    my(%wavesStim) = %$wavesStim;
+    ## Apply the wave to $stim
+    my($input, $wavtime);
+    foreach $input (keys %wavesStim) {
+      my($inputRef) = $wavesStim{$input};
+      my(%times) = %$inputRef;
+      foreach $wavtime (keys %times) {
+        my($valRef) = $times{$wavtime};
+        my($value, $rftime) = @$valRef;
+        my($oldValRef)      = ${$stim}{$input}{$wavtime+$time};
+        my($oldVal, $oldRfTime) = @$oldValRef;
+        ## Do the function
+        ${$stim}{$input}{$wavtime+$time} = 
+            ($function eq "|")? [($value | $oldVal), $rftime] :
+            ($function eq "&")? [($value & $oldVal), $rftime] :
+                                [ $value, $rftime];
+      }
+    }
+    ## Increment time if no next function
+    $time += $duration if ($nxtFunction !~ /^[|&]$/);
+  }
+  return($stim, $time);
+}
+
+
+sub processPARAMS {
+  my($block) = @_;
+  my($arrayRef) = $$block{data};
+  ## Some error checking
+  my(@params);
+  for(@$arrayRef) {
+    my($param, $value) = split;
+    $params{$param} = $value;
+    push(@params, $param);
+  SWITCH: {
+      $unitTime=convertToNS($value) if($param eq "unittime");
+      $unitTime = int($unitTime)    if($verilog);
+      print ".param $param=$value\n" if (!$verilog);
+      print "  parameter $param = $value;\n" if ($verilog && 
+                                                 $param ne "unittime");
+    }
+  }
+  my(@reqdParams) = ($verilog)? qw/unittime/                    :
+                  qw/unittime measvalue rftime high low ttlow tthigh/;
+  for(@reqdParams) {
+    my($check) = $_;
+    if(! grep(/^$check$/, @params)) {
+      warn "WARNING: Param $_ needs to be defined in the PARAMS block.\n";
+    }
+  }
+  ## Unittime should be an integer for verilog waves.
+  die "ERROR: Param unittime needs to be <integer> ns ".
+      "instead of ${unitTime}ns.\n\n\n"
+      if((int($unitTime) != $unitTime) && $verilog);
+}
+
+## Process verilog stimulus
+sub processSTIMULUS {
+  my($block) = @_;
+  my($arrayRef) = $$block{data}; 
+
+  #my($blockName)  = shift;
+  #my($arrayRef)   = $file{"STIMULUS"};
+
+  ## Return if there is no stimulus block.
+  if(!scalar(@$arrayRef)) { return; }
+
+  my($inputBlock);
+  for(@blocks) { $inputBlock = $_; last if $$_{name} eq "INPUTS"};
+  my(@inputArray) = @{$$inputBlock{data}}; ## Copy
+
+  my($stim, $time) = ({}, 0);
+
+  ## Initialize all inputs to 0
+  for(@inputArray) {
+    chomp; s/\[.*//g;
+    s/\s*$//g;
+    ${$stim}{$_}{$time} = [ 0, 0];
+  }
+
+  my($found)=0;
+  for(@$arrayRef) {
+    s/\s//g;  ## Remove all whitespaces
+    if(/^\$(INIT)\s*\((.*)\)/i) {
+      ($stim, $time) = setWavesStim($stim, $2, $time);
+      $found=1;
+    }
+  }
+  if(! $found) { die "ERROR: No INIT found in $$block{name} block.\n"; }
+
+  ## Convert $stim to verilog initial blocks
+  for my $sig (keys %$stim) {
+    my($times) = ${$stim}{$sig};
+    my($prevTime) = 0;
+    print "   initial begin\n";
+    my($start, $end) = isBus($sig);
+    my($isBus) = ($start - $end) > 0;
+    for my $t (sort {$a <=> $b} (keys %$times)) {
+       my($valArray) = ${$stim}{$sig}{$t};
+       my($val, $rft) = @$valArray;
+       my($timeDiff)  = $t - $prevTime;
+       $timeDiff = $timeDiff==0? "" : "#$timeDiff";
+       my($busWidth) = $start-$end+1;
+       print "     $timeDiff $sig = ${busWidth}'h$val;\n";
+       #print "     $timeDiff $sig\[$start:$end\] = 'h$val;\n" if $isBus;
+       #print "     $timeDiff $sig = 'h$val;\n" if !$isBus;
+       $prevTime = $t;
+    }
+    print "   end\n";
+  }
+
+  ## Create the $finish block at the end of current time.
+  print "   initial #$time \$finish;\n";
+
+  return;
+}
+
+
+sub isBus {
+  my($signal) = shift;
+  my($inputBlock);
+  for(@blocks) { $inputBlock = $_; last if $$_{name} eq "INPUTS"};
+  my($inputArray) = $$inputBlock{data};
+  for(@$inputArray) {
+    if(/^\s*$signal\s*\[([^:]+):([^]]+)\]/) {
+      my($start, $end) = ($1, $2);
+      ## See if we have any params in start and end, and substitute them
+      ($start, $end) =  map {
+        for my $param (keys %params) { s/$param/$params{$param}/g; }
+        eval $_;
+      } ($start, $end);
+      return($start, $end);
+    }
+  }
+  return;
+}
+
+## Do function evaluation for aliases
+sub wavesAlias {
+  my($signal, $val) = @_;
+  my($retVal) = "";
+  if($val =~ m/^random$/) {
+    my($start, $end) = isBus($signal);
+    my($size) = ($start > $end)? $start - $end : $end - $start;
+    for(my $i=$size; $size > 0; $size -=32) {
+      $retVal .= sprintf("%x", int(rand(0xffffffff)));
+    }
+  } else {
+    $retVal = $val;
+  }
+  return($retVal);
+}
+
+__END__
+
